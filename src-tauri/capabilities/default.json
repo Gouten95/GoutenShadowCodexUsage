@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Permisos de la ventana principal",
+  "windows": [
+    "main",
+    "peek"
+  ],
+  "permissions": [
+    "core:default",
+    "notification:default",
+    "autostart:default"
+  ]
+}
