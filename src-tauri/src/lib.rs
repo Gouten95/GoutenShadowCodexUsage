@@ -55,7 +55,7 @@ async fn read_usage() -> Result<serde_json::Value, String> {
         let mut child = command.spawn().map_err(|_| "No se encontró Codex CLI. Instala Codex o agrégalo al PATH y vuelve a intentarlo.".to_string())?;
         let mut input = child.stdin.take().ok_or("No se pudo abrir la conexión con Codex")?;
         let output = child.stdout.take().ok_or("No se pudo leer la respuesta de Codex")?;
-        writeln!(input, "{}", serde_json::json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex_usage_glance","title":"GoutenShadow Codex Usage","version":"0.3.1"}}})).map_err(|_| "No se pudo iniciar Codex".to_string())?;
+        writeln!(input, "{}", serde_json::json!({"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex_usage_glance","title":"GoutenShadow Codex Usage","version":env!("CARGO_PKG_VERSION")}}})).map_err(|_| "No se pudo iniciar Codex".to_string())?;
         input.flush().map_err(|_| "No se pudo iniciar Codex".to_string())?;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
@@ -78,6 +78,111 @@ async fn read_usage() -> Result<serde_json::Value, String> {
         let _ = child.wait();
         result
     }).await.map_err(|_| "No se pudo ejecutar la consulta".to_string())?
+}
+
+#[tauri::command]
+fn set_floating_visible(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or("No se encontró la ventana flotante")?;
+    if visible {
+        window.show()
+    } else {
+        window.hide()
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_floating_compact(
+    app: tauri::AppHandle,
+    compact: bool,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or("No se encontró la ventana flotante")?;
+    let monitor = window.current_monitor().map_err(|e| e.to_string())?;
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let (min_width, min_height, default_width, default_height) = if compact {
+        (160.0_f64, 100.0_f64, 260.0_f64, 155.0_f64)
+    } else {
+        (300.0_f64, 215.0_f64, 410.0_f64, 270.0_f64)
+    };
+    let width = width
+        .filter(|v| v.is_finite())
+        .unwrap_or(default_width)
+        .clamp(min_width, 1200.0);
+    let height = height
+        .filter(|v| v.is_finite())
+        .unwrap_or(default_height)
+        .clamp(min_height, 900.0);
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(min_width, min_height)))
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|e| e.to_string())?;
+    if let Some(monitor) = monitor {
+        let origin = monitor.position();
+        let bounds = monitor.size();
+        let scale = monitor.scale_factor();
+        let w = (width * scale).ceil() as i32;
+        let h = (height * scale).ceil() as i32;
+        let x = position
+            .x
+            .clamp(origin.x, (origin.x + bounds.width as i32 - w).max(origin.x));
+        let y = position.y.clamp(
+            origin.y,
+            (origin.y + bounds.height as i32 - h).max(origin.y),
+        );
+        window
+            .set_position(tauri::PhysicalPosition::new(x, y))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn adjust_floating_size(app: tauri::AppHandle, compact: bool, delta: i32) -> Result<(), String> {
+    let window = app
+        .get_webview_window("floating")
+        .ok_or("No se encontró la ventana flotante")?;
+    let size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    let step = delta.clamp(-1, 1) as f64;
+    set_floating_compact(
+        app,
+        compact,
+        Some(size.width as f64 / scale + step * 25.0),
+        Some(size.height as f64 / scale + step * 15.0),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn remove_native_border(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE,
+    };
+    if let Ok(hwnd) = window.hwnd() {
+        let square: u32 = 1; // CSS controls the rounded corners.
+        let no_border: u32 = 0xffff_fffe;
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd.0 as _,
+                DWMWA_WINDOW_CORNER_PREFERENCE as _,
+                (&square as *const u32).cast(),
+                std::mem::size_of_val(&square) as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd.0 as _,
+                DWMWA_BORDER_COLOR as _,
+                (&no_border as *const u32).cast(),
+                std::mem::size_of_val(&no_border) as u32,
+            );
+        }
+    }
 }
 
 fn handle_tray_event(tray: &tauri::tray::TrayIcon, event: TrayIconEvent) {
@@ -134,7 +239,12 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![read_usage])
+        .invoke_handler(tauri::generate_handler![
+            read_usage,
+            set_floating_visible,
+            set_floating_compact,
+            adjust_floating_size
+        ])
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "Mostrar", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
@@ -154,6 +264,27 @@ pub fn run() {
             .focused(false)
             .build()?;
             let _ = peek.set_ignore_cursor_events(true);
+            let floating_window = tauri::WebviewWindowBuilder::new(
+                app,
+                "floating",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("GoutenShadow Codex Usage · Ventana flotante")
+            .inner_size(410.0, 270.0)
+            .min_inner_size(160.0, 100.0)
+            .decorations(false)
+            .transparent(true)
+            .resizable(true)
+            .visible(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .build()?;
+            #[cfg(target_os = "windows")]
+            remove_native_border(&floating_window);
+            #[cfg(not(target_os = "windows"))]
+            let _ = floating_window;
+
             TrayIconBuilder::with_id("dragon")
                 .icon(
                     app.default_window_icon()

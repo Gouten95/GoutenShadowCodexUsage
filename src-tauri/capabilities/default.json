@@ -3,11 +3,16 @@
   "description": "Permisos de la ventana principal",
   "windows": [
     "main",
-    "peek"
+    "peek",
+    "floating"
   ],
   "permissions": [
     "core:default",
     "notification:default",
-    "autostart:default"
+    "autostart:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-position"
   ]
 }
